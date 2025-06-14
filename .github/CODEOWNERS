@@ -1,0 +1,16 @@
+# Garis ini menetapkan Tim Inti (Core Team) sebagai pemilik default untuk semua file di repo ini.
+*       @Lumina-Enterprise-Solutions/Core-Team
+
+# Perubahan pada konfigurasi CI/CD dan workflow harus direview oleh Tim DevOps.
+.github/workflows/   @Lumina-Enterprise-Solutions/DevOps-Team
+
+# Dockerfile adalah tanggung jawab bersama antara Tim Inti dan Tim Platform.
+Dockerfile          @Lumina-Enterprise-Solutions/Core-Team @Lumina-Enterprise-Solutions/Platform-Team
+
+# Perubahan pada dependensi (go.mod, go.sum) memerlukan persetujuan dari Tim Arsitektur.
+go.mod              @Lumina-Enterprise-Solutions/Architecture-Team
+go.sum              @Lumina-Enterprise-Solutions/Architecture-Team
+
+# File utama aplikasi dan handler juga memerlukan pengawasan dari Tim Arsitektur.
+main.go             @Lumina-Enterprise-Solutions/Architecture-Team @Lumina-Enterprise-Solutions/Core-Team
+internal/handler/   @Lumina-Enterprise-Solutions/Architecture-Team @Lumina-Enterprise-Solutions/Core-Team
