@@ -19,27 +19,37 @@ import (
 
 // Fungsi helper untuk mengambil rahasia dari Vault dan set sebagai env var
 func loadSecretsFromVault() {
-	client, err := client.NewVaultClient()
-	if err != nil { /* ... */
+	vaultClient, err := client.NewVaultClient()
+	if err != nil { // <-- PERBAIKAN: Mengatasi SA9003 (empty branch)
+		log.Fatalf("Gagal membuat klien Vault: %v", err)
 	}
 	secretPath := "secret/data/prism"
 
-	host, _ := client.ReadSecret(secretPath, "mailtrap_host")
-	port, _ := client.ReadSecret(secretPath, "mailtrap_port")
-	user, _ := client.ReadSecret(secretPath, "mailtrap_user")
-	pass, _ := client.ReadSecret(secretPath, "mailtrap_pass")
+	host, _ := vaultClient.ReadSecret(secretPath, "mailtrap_host")
+	port, _ := vaultClient.ReadSecret(secretPath, "mailtrap_port")
+	user, _ := vaultClient.ReadSecret(secretPath, "mailtrap_user")
+	pass, _ := vaultClient.ReadSecret(secretPath, "mailtrap_pass")
 
-	os.Setenv("MAILTRAP_HOST", host)
-	os.Setenv("MAILTRAP_PORT", port)
-	os.Setenv("MAILTRAP_USER", user)
-	os.Setenv("MAILTRAP_PASS", pass)
+	// <-- PERBAIKAN: Mengatasi 3 error dari `errcheck` dengan memeriksa return value.
+	if err := os.Setenv("MAILTRAP_HOST", host); err != nil {
+		log.Fatalf("Gagal mengatur env var MAILTRAP_HOST: %v", err)
+	}
+	if err := os.Setenv("MAILTRAP_PORT", port); err != nil {
+		log.Fatalf("Gagal mengatur env var MAILTRAP_PORT: %v", err)
+	}
+	if err := os.Setenv("MAILTRAP_USER", user); err != nil {
+		log.Fatalf("Gagal mengatur env var MAILTRAP_USER: %v", err)
+	}
+	if err := os.Setenv("MAILTRAP_PASS", pass); err != nil {
+		log.Fatalf("Gagal mengatur env var MAILTRAP_PASS: %v", err)
+	}
 	log.Println("Berhasil memuat kredensial Mailtrap dari Vault.")
 }
 
 func main() {
 	loadSecretsFromVault()
 
-	emailService := service.NewEmailService() // <-- Inisialisasi service
+	emailService := service.NewEmailService()
 	queueService := service.NewQueueService()
 
 	go func() {
@@ -52,7 +62,12 @@ func main() {
 				continue
 			}
 			log.Printf("Menerima job baru: Kirim email ke %s", job.To)
-			emailService.Send(job.To, job.Subject, job.Body)
+
+			// <-- PERBAIKAN: Mengatasi `errcheck` dengan memeriksa error dari `Send`.
+			if err := emailService.Send(job.To, job.Subject, job.Body); err != nil {
+				log.Printf("ERROR: Gagal mengirim email untuk job ke %s: %v", job.To, err)
+				// Jangan hentikan worker, cukup catat error dan lanjut ke job berikutnya.
+			}
 		}
 	}()
 
