@@ -38,10 +38,9 @@ jobs:
 
     - name: Run Unit Tests with Coverage
       run: go test -v -race -coverprofile=coverage.out -covermode=atomic ./...
-
-    - name: Upload Coverage Report
-      uses: codecov/codecov-action@v4
-      with:
-        token: ${{ secrets.CODECOV_TOKEN }} # Token opsional untuk repo privat
-        files: ./coverage.out
-        fail_ci_if_error: true
+    # - name: Upload Coverage Report
+    #   uses: codecov/codecov-action@v4
+    #   with:
+    #     token: ${{ secrets.CODECOV_TOKEN }} # Token opsional untuk repo privat
+    #     files: ./coverage.out
+    #     fail_ci_if_error: true
