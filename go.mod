@@ -3,7 +3,7 @@ module github.com/Lumina-Enterprise-Solutions/prism-notification-service
 go 1.24.3
 
 require (
-	github.com/Lumina-Enterprise-Solutions/prism-common-libs v1.0.0
+	github.com/Lumina-Enterprise-Solutions/prism-common-libs v1.0.1
 	github.com/gin-gonic/gin v1.10.1
 	github.com/redis/go-redis/v9 v9.10.0
 	github.com/zsais/go-gin-prometheus v0.1.0
