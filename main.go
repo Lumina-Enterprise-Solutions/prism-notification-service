@@ -1,15 +1,16 @@
-// file: services/prism-notification-service/main.go
 package main
 
 import (
 	"context"
+	"fmt"
 	"log"
-	"os"
+	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/Lumina-Enterprise-Solutions/prism-common-libs/client"
-	"github.com/Lumina-Enterprise-Solutions/prism-common-libs/ginutil"
 	"github.com/Lumina-Enterprise-Solutions/prism-common-libs/telemetry"
+	notifconfig "github.com/Lumina-Enterprise-Solutions/prism-notification-service/config"
 	"github.com/Lumina-Enterprise-Solutions/prism-notification-service/internal/handler"
 	"github.com/Lumina-Enterprise-Solutions/prism-notification-service/internal/service"
 	"github.com/gin-gonic/gin"
@@ -17,40 +18,45 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 )
 
-// Fungsi helper untuk mengambil rahasia dari Vault dan set sebagai env var
-func loadSecretsFromVault() {
+func setupDependencies() error {
 	vaultClient, err := client.NewVaultClient()
-	if err != nil { // <-- PERBAIKAN: Mengatasi SA9003 (empty branch)
-		log.Fatalf("Gagal membuat klien Vault: %v", err)
+	if err != nil {
+		return fmt.Errorf("gagal membuat klien Vault: %w", err)
 	}
 	secretPath := "secret/data/prism"
-
-	host, _ := vaultClient.ReadSecret(secretPath, "mailtrap_host")
-	port, _ := vaultClient.ReadSecret(secretPath, "mailtrap_port")
-	user, _ := vaultClient.ReadSecret(secretPath, "mailtrap_user")
-	pass, _ := vaultClient.ReadSecret(secretPath, "mailtrap_pass")
-
-	// <-- PERBAIKAN: Mengatasi 3 error dari `errcheck` dengan memeriksa return value.
-	if err := os.Setenv("MAILTRAP_HOST", host); err != nil {
-		log.Fatalf("Gagal mengatur env var MAILTRAP_HOST: %v", err)
+	requiredSecrets := []string{
+		"mailtrap_host",
+		"mailtrap_port",
+		"mailtrap_user",
+		"mailtrap_pass",
 	}
-	if err := os.Setenv("MAILTRAP_PORT", port); err != nil {
-		log.Fatalf("Gagal mengatur env var MAILTRAP_PORT: %v", err)
-	}
-	if err := os.Setenv("MAILTRAP_USER", user); err != nil {
-		log.Fatalf("Gagal mengatur env var MAILTRAP_USER: %v", err)
-	}
-	if err := os.Setenv("MAILTRAP_PASS", pass); err != nil {
-		log.Fatalf("Gagal mengatur env var MAILTRAP_PASS: %v", err)
+	if err := vaultClient.LoadSecretsToEnv(secretPath, requiredSecrets...); err != nil {
+		return fmt.Errorf("gagal memuat kredensial Mailtrap dari Vault: %w", err)
 	}
 	log.Println("Berhasil memuat kredensial Mailtrap dari Vault.")
+	return nil
 }
 
 func main() {
-	loadSecretsFromVault()
+	cfg := notifconfig.Load()
+	log.Printf("Konfigurasi dimuat: ServiceName=%s, Port=%d, Jaeger=%s, Redis=%s", cfg.ServiceName, cfg.Port, cfg.JaegerEndpoint, cfg.RedisAddr)
+
+	tp, err := telemetry.InitTracerProvider(cfg.ServiceName, cfg.JaegerEndpoint)
+	if err != nil {
+		log.Fatalf("Gagal menginisialisasi OTel tracer provider: %v", err)
+	}
+	defer func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			log.Printf("Error saat mematikan tracer provider: %v", err)
+		}
+	}()
+
+	if err := setupDependencies(); err != nil {
+		log.Fatalf("Gagal menginisialisasi dependensi: %v", err)
+	}
 
 	emailService := service.NewEmailService()
-	queueService := service.NewQueueService()
+	queueService := service.NewQueueService(cfg.RedisAddr)
 
 	go func() {
 		log.Println("Memulai background worker untuk antrian notifikasi...")
@@ -62,56 +68,39 @@ func main() {
 				continue
 			}
 			log.Printf("Menerima job baru: Kirim email ke %s", job.To)
-
-			// <-- PERBAIKAN: Mengatasi `errcheck` dengan memeriksa error dari `Send`.
 			if err := emailService.Send(job.To, job.Subject, job.Body); err != nil {
 				log.Printf("ERROR: Gagal mengirim email untuk job ke %s: %v", job.To, err)
-				// Jangan hentikan worker, cukup catat error dan lanjut ke job berikutnya.
 			}
 		}
 	}()
 
-	serviceName := "prism-notification-service"
-	log.Printf("Starting %s...", serviceName)
-
-	jaegerEndpoint := os.Getenv("JAEGER_ENDPOINT")
-	if jaegerEndpoint == "" {
-		jaegerEndpoint = "jaeger:4317"
-	}
-	tp, err := telemetry.InitTracerProvider(serviceName, jaegerEndpoint)
-	if err != nil {
-		log.Fatalf("Failed to initialize OTel tracer provider: %v", err)
-	}
-	defer func() {
-		if err := tp.Shutdown(context.Background()); err != nil {
-			log.Printf("Error shutting down tracer provider: %v", err)
-		}
-	}()
-
 	notificationHandler := handler.NewNotificationHandler(queueService)
-	portStr := os.Getenv("PORT")
-	if portStr == "" {
-		portStr = "8080" // Setiap service berjalan di port 8080 di dalam containernya
-	}
+	portStr := strconv.Itoa(cfg.Port)
 
-	log.Printf("Service configured to run on port %s", portStr)
-
-	// Initialize Gin Router
 	router := gin.Default()
-	router.Use(otelgin.Middleware(serviceName))
+	router.Use(otelgin.Middleware(cfg.ServiceName))
 	p := ginprometheus.NewPrometheus("gin")
 	p.Use(router)
 
-	// --- Group routes ---
 	notificationRoutes := router.Group("/notifications")
 	{
+		notificationRoutes.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "healthy"}) })
 		notificationRoutes.POST("/send", notificationHandler.SendNotification)
 	}
 
-	ginutil.SetupHealthRoutesForGroup(notificationRoutes, serviceName, "1.0.0")
+	consulClient, err := client.RegisterService(client.ServiceRegistrationInfo{
+		ServiceName:    cfg.ServiceName,
+		ServiceID:      fmt.Sprintf("%s-%s", cfg.ServiceName, portStr),
+		Port:           cfg.Port,
+		HealthCheckURL: fmt.Sprintf("http://%s:%s/notifications/health", cfg.ServiceName, portStr),
+	})
+	if err != nil {
+		log.Fatalf("Gagal mendaftarkan service ke Consul: %v", err)
+	}
+	defer client.DeregisterService(consulClient, fmt.Sprintf("%s-%s", cfg.ServiceName, portStr))
 
-	log.Printf("Starting %s on port %s", serviceName, portStr)
+	log.Printf("Memulai %s di port %s", cfg.ServiceName, portStr)
 	if err := router.Run(":" + portStr); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+		log.Fatalf("Gagal menjalankan server: %v", err)
 	}
 }
