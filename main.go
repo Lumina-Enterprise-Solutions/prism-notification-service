@@ -18,8 +18,8 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 )
 
-func setupDependencies() error {
-	vaultClient, err := client.NewVaultClient()
+func setupDependencies(cfg *notifconfig.Config) error {
+	vaultClient, err := client.NewVaultClient(cfg.VaultAddr, cfg.VaultToken)
 	if err != nil {
 		return fmt.Errorf("gagal membuat klien Vault: %w", err)
 	}
@@ -51,7 +51,7 @@ func main() {
 		}
 	}()
 
-	if err := setupDependencies(); err != nil {
+	if err := setupDependencies(cfg); err != nil {
 		log.Fatalf("Gagal menginisialisasi dependensi: %v", err)
 	}
 
