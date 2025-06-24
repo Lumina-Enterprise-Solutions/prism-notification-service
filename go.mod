@@ -3,9 +3,10 @@ module github.com/Lumina-Enterprise-Solutions/prism-notification-service
 go 1.24.3
 
 require (
-	github.com/Lumina-Enterprise-Solutions/prism-common-libs v1.2.4
+	github.com/Lumina-Enterprise-Solutions/prism-common-libs v1.2.5
 	github.com/gin-gonic/gin v1.10.1
 	github.com/redis/go-redis/v9 v9.10.0
+	github.com/rs/zerolog v1.34.0
 	github.com/zsais/go-gin-prometheus v0.1.0
 	go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin v0.61.0
 	gopkg.in/gomail.v2 v2.0.0-20160411212932-81ebce5c23df
