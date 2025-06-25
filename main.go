@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/Lumina-Enterprise-Solutions/prism-common-libs/client"
@@ -63,20 +67,34 @@ func main() {
 
 	emailService := service.NewEmailService()
 	queueService := service.NewQueueService(cfg.RedisAddr)
+	// === Tahap 2: Jalankan Worker & Server ===
+
+	// Konteks untuk mengontrol siklus hidup worker
+	workerCtx, workerCancel := context.WithCancel(context.Background())
 
 	go func() {
-		log.Info().Msg("Memulai background worker untuk antrian notifikasi...")
+		log.Info().Msg("Starting background worker for notification queue...")
 		for {
-			job, err := queueService.Dequeue(context.Background())
-			if err != nil {
-				log.Error().Err(err).Msg("Gagal mengambil job dari antrian")
-				log.Info().Msg("Mencoba lagi dalam 5 detik...")
-				time.Sleep(5 * time.Second)
-				continue
-			}
-			log.Info().Msgf("Menerima job baru: Kirim email ke %s", job.To)
-			if err := emailService.Send(job.To, job.Subject, job.Body); err != nil {
-				log.Error().Err(err).Msgf("Gagal mengirim email untuk job ke %s", job.To)
+			select {
+			case <-workerCtx.Done(): // Berhenti jika konteks dibatalkan
+				log.Info().Msg("Notification worker stopping...")
+				return
+			default:
+				// BRPop akan memblokir, tetapi akan di-unblock jika koneksi Redis ditutup
+				job, err := queueService.Dequeue(workerCtx)
+				if err != nil {
+					// Cek apakah error karena konteks dibatalkan
+					if errors.Is(err, context.Canceled) {
+						continue // Keluar dari loop
+					}
+					log.Error().Err(err).Msg("Failed to dequeue job, retrying...")
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				log.Info().Str("recipient", job.To).Msg("Processing new job")
+				if err := emailService.Send(job.To, job.Subject, job.Body); err != nil {
+					log.Error().Err(err).Str("recipient", job.To).Msg("Failed to send email")
+				}
 			}
 		}
 	}()
@@ -110,4 +128,35 @@ func main() {
 	if err := router.Run(":" + portStr); err != nil {
 		log.Fatal().Err(err).Msg("Gagal menjalankan server")
 	}
+
+	srv := &http.Server{
+		Addr:    ":" + portStr,
+		Handler: router,
+	}
+
+	// Jalankan server HTTP di goroutine
+	go func() {
+		log.Info().Str("service", cfg.ServiceName).Msgf("HTTP server listening on %s", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal().Err(err).Msg("HTTP server ListenAndServe error")
+		}
+	}()
+
+	// === Tahap 3: Tangani Shutdown ===
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	log.Info().Msg("Shutdown signal received, starting graceful shutdown...")
+
+	// Batalkan konteks worker agar berhenti
+	workerCancel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatal().Err(err).Msg("Server forced to shutdown")
+	}
+
+	log.Info().Msg("Server exiting gracefully.")
 }
