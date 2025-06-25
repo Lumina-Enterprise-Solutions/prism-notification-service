@@ -74,26 +74,57 @@ func main() {
 
 	go func() {
 		log.Info().Msg("Starting background worker for notification queue...")
+		const maxRetries = 3
+		const retryDelay = 30 * time.Second
+
 		for {
 			select {
-			case <-workerCtx.Done(): // Berhenti jika konteks dibatalkan
+			case <-workerCtx.Done():
 				log.Info().Msg("Notification worker stopping...")
 				return
 			default:
-				// BRPop akan memblokir, tetapi akan di-unblock jika koneksi Redis ditutup
 				job, err := queueService.Dequeue(workerCtx)
 				if err != nil {
-					// Cek apakah error karena konteks dibatalkan
 					if errors.Is(err, context.Canceled) {
-						continue // Keluar dari loop
+						continue
 					}
 					log.Error().Err(err).Msg("Failed to dequeue job, retrying...")
-					time.Sleep(5 * time.Second)
+					time.Sleep(5 * time.Second) // Tunggu sebentar jika Redis error
 					continue
 				}
+
 				log.Info().Str("recipient", job.To).Msg("Processing new job")
-				if err := emailService.Send(job.To, job.Subject, job.Body); err != nil {
-					log.Error().Err(err).Str("recipient", job.To).Msg("Failed to send email")
+
+				// --- Logika Retry ---
+				var sendErr error
+				for i := 0; i < maxRetries; i++ {
+					sendErr = emailService.Send(job.To, job.Subject, job.Body)
+					if sendErr == nil {
+						log.Info().Str("recipient", job.To).Msg("Email sent successfully")
+						break // Berhasil, keluar dari loop retry
+					}
+					log.Warn().
+						Err(sendErr).
+						Str("recipient", job.To).
+						Int("attempt", i+1).
+						Int("max_attempts", maxRetries).
+						Msg("Failed to send email, will retry...")
+
+					// Tunggu sebelum mencoba lagi, kecuali ini percobaan terakhir
+					if i < maxRetries-1 {
+						time.Sleep(retryDelay)
+					}
+				}
+
+				// Jika setelah semua retry masih gagal, pindahkan ke DLQ
+				if sendErr != nil {
+					log.Error().
+						Err(sendErr).
+						Str("recipient", job.To).
+						Msg("Job failed after all retries, moving to DLQ")
+					if dlqErr := queueService.EnqueueToDLQ(context.Background(), *job); dlqErr != nil {
+						log.Error().Err(dlqErr).Str("recipient", job.To).Msg("FATAL: Failed to move job to DLQ")
+					}
 				}
 			}
 		}

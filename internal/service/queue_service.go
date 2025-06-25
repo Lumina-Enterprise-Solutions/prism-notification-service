@@ -3,11 +3,16 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 )
 
-const NotificationQueueKey = "notification_queue"
+const (
+	NotificationQueueKey = "notification_queue"
+	NotificationDLQKey   = "notification_dlq" // <-- KEY BARU
+)
 
 type NotificationJob struct {
 	To      string `json:"to"`
@@ -45,4 +50,14 @@ func (s *QueueService) Dequeue(ctx context.Context) (*NotificationJob, error) {
 		return nil, err
 	}
 	return &job, nil
+}
+func (s *QueueService) EnqueueToDLQ(ctx context.Context, job NotificationJob) error {
+	payload, err := json.Marshal(job)
+	if err != nil {
+		// Error ini seharusnya tidak terjadi jika job-nya valid
+		return fmt.Errorf("failed to marshal job for DLQ: %w", err)
+	}
+	log.Warn().Str("recipient", job.To).Msg("Moving job to Dead-Letter Queue")
+	// Gunakan LPush ke key DLQ
+	return s.redisClient.LPush(ctx, NotificationDLQKey, payload).Err()
 }
