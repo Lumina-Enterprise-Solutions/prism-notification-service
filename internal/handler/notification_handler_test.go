@@ -83,7 +83,6 @@ func TestSendNotification_Success(t *testing.T) {
 			return nil
 		},
 	}
-	// Panggil setupRouter yang benar
 	router := setupRouter(mockQueue, hub)
 
 	reqBody := SendNotificationRequest{RecipientID: "u1", Recipient: "t@e.com", Subject: "s", TemplateName: "tn"}
@@ -106,7 +105,12 @@ func TestHandleWebSocket(t *testing.T) {
 	defer hub.Stop()
 
 	redisClient, redisMock := redismock.NewClientMock()
-	defer redisClient.Close()
+	// LINT FIX: Periksa error saat menutup klien Redis
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			t.Logf("failed to close redis mock client: %v", err)
+		}
+	}()
 
 	router := setupRouterWithRealMiddleware(&MockQueueService{}, hub, redisClient)
 	server := httptest.NewServer(router)
@@ -128,20 +132,27 @@ func TestHandleWebSocket(t *testing.T) {
 	header.Add("Authorization", "Bearer "+tokenString)
 
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
-
 	require.NoError(t, err, "Handshake WebSocket seharusnya berhasil")
+
+	// LINT FIX: Periksa error saat menutup body respons
 	if resp != nil {
 		assert.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
-		resp.Body.Close()
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				t.Logf("failed to close response body: %v", err)
+			}
+		}()
 	}
 	require.NotNil(t, conn)
 
-	// Tutup koneksi secara eksplisit dari sisi klien untuk memberhentikan loop server.
-	defer conn.Close()
+	// LINT FIX: Periksa error saat menutup koneksi websocket
+	defer func() {
+		if err := conn.Close(); err != nil {
+			t.Logf("failed to close websocket connection: %v", err)
+		}
+	}()
 
-	// Tunggu sebentar agar server dapat memproses registrasi
 	time.Sleep(50 * time.Millisecond)
-
 	assert.True(t, hub.IsClientRegistered(userID), "Klien harus terdaftar setelah handshake")
 	require.NoError(t, redisMock.ExpectationsWereMet())
 }
