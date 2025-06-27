@@ -1,5 +1,5 @@
 # Nama workflow untuk proses rilis
-name: Create Release and Build Binaries
+name: Create Release and Publish Assets
 
 # Pemicu: Hanya berjalan saat ada tag baru yang di-push dengan format v* (e.g., v1.2.3)
 on:
@@ -8,10 +8,13 @@ on:
     - 'v*'
 
 jobs:
-  release:
+  # Nama job bisa lebih deskriptif
+  build-and-release:
+    name: Build, Package, and Release
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Dibutuhkan untuk membuat release dan mengunggah aset
+      # 'contents: write' diperlukan untuk membuat rilis
+      contents: write
 
     steps:
     - name: Checkout repository
@@ -22,39 +25,39 @@ jobs:
       with:
         go-version: '1.24'
 
+    # Langkah ini tetap sama, mengambil versi dari tag
     - name: Get Release Version from Tag
       id: get_version
-      # Mengekstrak versi (misalnya '1.2.3' dari 'v1.2.3')
       run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
 
-    - name: Build binaries for release
-      # Menggunakan GoReleaser adalah cara yang lebih canggih,
-      # tapi untuk sekarang kita build manual untuk kesederhanaan.
+    - name: Build Go binary for Linux
       run: |
-        go build -o prism-notification-service-linux-amd64 .
-        # Tambahkan platform lain jika perlu
-        # GOOS=windows GOARCH=amd64 go build -o prism-notification-service-windows-amd64.exe .
-        # GOOS=darwin GOARCH=amd64 go build -o prism-notification-service-darwin-amd64 .
+        # Mengatur variabel lingkungan untuk cross-compilation jika diperlukan
+        # -ldflags="-w -s" adalah praktik terbaik untuk mengecilkan ukuran binary rilis
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o prism-notification-service .
 
-    - name: Create GitHub Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ env.VERSION }}
-        body: "Rilis resmi versi ${{ env.VERSION }} dari Prism Notification Service."
-        draft: false
-        prerelease: false
+    - name: Create archive of the binary
+      run: |
+        # Membuat arsip tar.gz yang umum digunakan di lingkungan Linux
+        tar -czvf prism-notification-service-${{ env.VERSION }}-linux-amd64.tar.gz prism-notification-service
 
-    - name: Upload Linux Binary to Release
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Opsional: Buat juga arsip .zip jika target Anda termasuk Windows
+        # zip prism-notification-service-${{ env.VERSION }}-linux-amd64.zip prism-notification-service
+
+    - name: Create GitHub Release and Upload Assets
+      # MENGGANTI: Gunakan action yang lebih modern dan kaya fitur
+      uses: softprops/action-gh-release@v2
       with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./prism-notification-service-linux-amd64
-        asset_name: prism-notification-service-linux-amd64
-        asset_content_type: application/octet-stream
-    # Ulangi blok 'Upload ... Binary to Release' untuk platform lain jika Anda membuatnya
+        # Action ini akan secara otomatis menggunakan tag yang memicu workflow (GITHUB_REF)
+        # Nama rilis akan sama dengan nama tag (e.g., "v1.0.0")
+
+        # PENTING: Fitur ini secara otomatis membuat body rilis yang indah
+        # berdasarkan PR yang telah di-merge. Ini menggantikan body statis Anda.
+        # Anda bisa menambahkan file .github/release.yml untuk mengkustomisasi formatnya.
+        generate_release_notes: true
+
+        # Daftar file yang akan diunggah sebagai aset rilis.
+        # Tanda bintang (*) adalah wildcard.
+        files: |
+          ./*.tar.gz
+          ./*.zip
