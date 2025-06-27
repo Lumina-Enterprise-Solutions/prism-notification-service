@@ -1,63 +1,80 @@
-# Nama workflow untuk proses rilis
-name: Create Release and Publish Assets
+# Nama workflow untuk proses rilis lengkap
+name: Publish Docker Image and Create Release
 
-# Pemicu: Hanya berjalan saat ada tag baru yang di-push dengan format v* (e.g., v1.2.3)
 on:
   push:
     tags:
     - 'v*'
 
 jobs:
-  # Nama job bisa lebih deskriptif
-  build-and-release:
-    name: Build, Package, and Release
+  # Nama job yang jelas
+  publish-and-release:
+    name: Publish and Release
     runs-on: ubuntu-latest
     permissions:
-      # 'contents: write' diperlukan untuk membuat rilis
+      # 'contents: write' untuk membuat rilis
       contents: write
+      # 'packages: write' untuk push image ke GHCR
+      packages: write
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
+    # Langkah 1: Login ke GitHub Container Registry
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
       with:
-        go-version: '1.24'
+        registry: ghcr.io
+        # GITHUB_TOKEN memiliki izin yang kita setel di atas
+        username: ${{ github.repository_owner }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
-    # Langkah ini tetap sama, mengambil versi dari tag
-    - name: Get Release Version from Tag
-      id: get_version
-      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_ENV
+    # Langkah 2: Ekstrak metadata (tag dan label) untuk Docker image
+    - name: Extract Docker metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        # Nama image akan menjadi ghcr.io/<owner>/<repo>
+        images: ghcr.io/${{ github.repository }}
+        # Ini akan secara otomatis membuat tag Docker yang berguna:
+        # - v1.2.3 -> :1.2.3, :1.2, :1, :latest
+        tags: |
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
+          type=edge,branch=main
+          type=ref,event=branch
 
-    - name: Build Go binary for Linux
-      run: |
-        # Mengatur variabel lingkungan untuk cross-compilation jika diperlukan
-        # -ldflags="-w -s" adalah praktik terbaik untuk mengecilkan ukuran binary rilis
-        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o prism-notification-service .
+    # Langkah 3: Setup build environment untuk Docker
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
 
-    - name: Create archive of the binary
-      run: |
-        # Membuat arsip tar.gz yang umum digunakan di lingkungan Linux
-        tar -czvf prism-notification-service-${{ env.VERSION }}-linux-amd64.tar.gz prism-notification-service
+    # Langkah 4: Build dan Push image Docker
+    # Ini adalah bagian yang hilang dari workflow sebelumnya
+    - name: Build and push Docker image
+      id: build-and-push
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        # Gunakan Dockerfile dari root direktori service ini
+        file: ./Dockerfile
+        # Push ke registry setelah build berhasil
+        push: true
+        # Gunakan tag dan label yang dihasilkan oleh langkah 'meta'
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
 
-        # Opsional: Buat juga arsip .zip jika target Anda termasuk Windows
-        # zip prism-notification-service-${{ env.VERSION }}-linux-amd64.zip prism-notification-service
-
-    - name: Create GitHub Release and Upload Assets
-      # MENGGANTI: Gunakan action yang lebih modern dan kaya fitur
+    # Langkah 5: Buat Rilis GitHub (menggunakan action yang lebih canggih)
+    - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        # Action ini akan secara otomatis menggunakan tag yang memicu workflow (GITHUB_REF)
-        # Nama rilis akan sama dengan nama tag (e.g., "v1.0.0")
-
-        # PENTING: Fitur ini secara otomatis membuat body rilis yang indah
-        # berdasarkan PR yang telah di-merge. Ini menggantikan body statis Anda.
-        # Anda bisa menambahkan file .github/release.yml untuk mengkustomisasi formatnya.
+        # Secara otomatis membuat catatan rilis yang rapi dari PR
         generate_release_notes: true
-
-        # Daftar file yang akan diunggah sebagai aset rilis.
-        # Tanda bintang (*) adalah wildcard.
-        files: |
-          ./*.tar.gz
-          ./*.zip
+        # Anda tidak perlu menyertakan file binary di sini karena fokus kita
+        # sekarang adalah image Docker. Namun, jika Anda mau, Anda bisa
+        # menambahkan langkah build dan mengunggahnya di 'files:'.
