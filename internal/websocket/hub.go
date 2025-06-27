@@ -68,6 +68,13 @@ func (h *Hub) Unregister(client *Client) {
 	h.unregister <- client
 }
 
+func (h *Hub) IsClientRegistered(userID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	_, ok := h.clients[userID]
+	return ok
+}
+
 func (h *Hub) SendToUser(userID string, message interface{}) bool {
 	h.mu.RLock()
 	client, ok := h.clients[userID]

@@ -58,15 +58,16 @@ func (h *NotificationHandler) SendNotification(c *gin.Context) {
 }
 
 func (h *NotificationHandler) HandleWebSocket(c *gin.Context) {
-	userIDValue, exists := c.Get("userID")
+	// FIX: Gunakan kunci yang benar "user_id" (seperti yang di-set oleh JWTMiddleware).
+	userIDValue, exists := c.Get("user_id")
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User ID not found in context"})
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "User ID not found in context"})
 		return
 	}
 
 	userID, ok := userIDValue.(string)
 	if !ok || userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID in context"})
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID format in context"})
 		return
 	}
 
@@ -76,18 +77,16 @@ func (h *NotificationHandler) HandleWebSocket(c *gin.Context) {
 		return
 	}
 
-	// FIX: Buat client dengan koneksi asli (*websocket.Conn).
-	// Ini valid karena *websocket.Conn secara implisit memenuhi interface ws.WSConnection.
 	client := &ws.Client{UserID: userID, Conn: conn}
 	h.hub.Register(client)
 
 	defer func() {
 		h.hub.Unregister(client)
-		conn.Close() // Pastikan koneksi juga ditutup saat handler selesai.
+		if err := conn.Close(); err != nil {
+			log.Printf("WARN: Error closing WebSocket for user %s: %v", userID, err)
+		}
 	}()
 
-	// Loop ini diperlukan untuk menjaga koneksi tetap hidup dan mendeteksi penutupan.
-	// Tanpa ini, defer akan langsung dieksekusi dan koneksi ditutup.
 	for {
 		if _, _, err := conn.ReadMessage(); err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {

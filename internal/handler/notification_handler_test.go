@@ -6,20 +6,24 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings" // Impor strings
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/Lumina-Enterprise-Solutions/prism-common-libs/auth"
 	"github.com/Lumina-Enterprise-Solutions/prism-notification-service/internal/service"
 	ws "github.com/Lumina-Enterprise-Solutions/prism-notification-service/internal/websocket"
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redismock/v9"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak" // Impor goleak
+	"go.uber.org/goleak"
 )
 
-// ... MockQueueService dan setupRouter tetap sama ...
+// MockQueueService tetap sama
 type MockQueueService struct {
 	EnqueueFunc    func(ctx context.Context, job service.NotificationJob) error
 	DequeueFunc    func(ctx context.Context) (*service.NotificationJob, error)
@@ -47,26 +51,31 @@ func (m *MockQueueService) EnqueueToDLQ(ctx context.Context, job service.Notific
 
 var _ service.Queue = (*MockQueueService)(nil)
 
+// FIX: Kembalikan fungsi setupRouter
 func setupRouter(q service.Queue, h *ws.Hub) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.Default()
 	handler := NewNotificationHandler(q, h)
 	router.POST("/notifications/send", handler.SendNotification)
+	// Kita tidak akan setup /ws di sini lagi, karena testnya butuh middleware khusus
 	return router
 }
 
-// FIX: Gabungkan semua test handler ke dalam satu TestMain untuk kontrol lifecycle
-func TestMain(m *testing.M) {
-	// Opsi untuk mengabaikan goroutine internal dari go-redis/redismock
-	// yang mungkin muncul sebagai false positive.
-	goleak.VerifyTestMain(m, goleak.IgnoreCurrent())
+func setupRouterWithRealMiddleware(q service.Queue, h *ws.Hub, redisClient *redis.Client) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.Default()
+	handler := NewNotificationHandler(q, h)
+	jwtAuthMiddleware := auth.JWTMiddleware(redisClient)
+	router.GET("/ws", jwtAuthMiddleware, handler.HandleWebSocket)
+	return router
 }
 
+// TestSendNotification_Success tidak berubah
 func TestSendNotification_Success(t *testing.T) {
 	hub := ws.NewHub()
 	go hub.Run()
 	defer hub.Stop()
-	// ... (sisa test ini tetap sama)
+
 	var enqueuedJob service.NotificationJob
 	mockQueue := &MockQueueService{
 		EnqueueFunc: func(ctx context.Context, job service.NotificationJob) error {
@@ -74,6 +83,7 @@ func TestSendNotification_Success(t *testing.T) {
 			return nil
 		},
 	}
+	// Panggil setupRouter yang benar
 	router := setupRouter(mockQueue, hub)
 
 	reqBody := SendNotificationRequest{RecipientID: "u1", Recipient: "t@e.com", Subject: "s", TemplateName: "tn"}
@@ -89,32 +99,49 @@ func TestSendNotification_Success(t *testing.T) {
 
 func TestHandleWebSocket(t *testing.T) {
 	defer goleak.VerifyNone(t)
+	t.Setenv("JWT_SECRET_KEY", "test-secret-for-ws")
 
-	// 1. Buat Hub
 	hub := ws.NewHub()
 	go hub.Run()
-	// Hub harus dihentikan terakhir
 	defer hub.Stop()
 
-	// 2. Buat handler
-	handler := NewNotificationHandler(&MockQueueService{}, hub)
+	redisClient, redisMock := redismock.NewClientMock()
+	defer redisClient.Close()
 
-	// 3. Buat router dan server
-	router := gin.New()
-	router.GET("/ws", func(c *gin.Context) {
-		c.Set("userID", "user-test")
-	}, handler.HandleWebSocket) // Perhatikan, tidak ada c.Next() karena ini adalah handler terakhir
-
+	router := setupRouterWithRealMiddleware(&MockQueueService{}, hub, redisClient)
 	server := httptest.NewServer(router)
-	// Server harus ditutup sebelum hub
 	defer server.Close()
 
-	// 4. Buat koneksi
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
-	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	userID := "user-ws-test"
+	jti := "unique-jwt-id-for-test"
+	tokenString, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": userID,
+		"jti": jti,
+		"exp": time.Now().Add(time.Hour).Unix(),
+	}).SignedString([]byte("test-secret-for-ws"))
 	require.NoError(t, err)
-	// Koneksi harus ditutup pertama kali
+
+	redisMock.ExpectGet(jti).RedisNil()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws"
+	header := http.Header{}
+	header.Add("Authorization", "Bearer "+tokenString)
+
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+
+	require.NoError(t, err, "Handshake WebSocket seharusnya berhasil")
+	if resp != nil {
+		assert.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
+		resp.Body.Close()
+	}
+	require.NotNil(t, conn)
+
+	// Tutup koneksi secara eksplisit dari sisi klien untuk memberhentikan loop server.
 	defer conn.Close()
 
-	time.Sleep(100 * time.Millisecond)
+	// Tunggu sebentar agar server dapat memproses registrasi
+	time.Sleep(50 * time.Millisecond)
+
+	assert.True(t, hub.IsClientRegistered(userID), "Klien harus terdaftar setelah handshake")
+	require.NoError(t, redisMock.ExpectationsWereMet())
 }
