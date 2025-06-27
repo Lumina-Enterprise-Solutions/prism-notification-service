@@ -1,40 +1,28 @@
-# services/prism-user-service/Dockerfile
-
-# --- Tahap 1: Builder ---
-# Tahap ini fokus untuk meng-compile aplikasi Go kita.
+# Tahap 1: Builder - Kompilasi kode Go
 FROM golang:1.24-alpine AS builder
-
+ENV CGO_ENABLED=0
 WORKDIR /app
-
-# Salin file manajemen dependensi
-COPY go.work go.work.sum ./
-COPY common/prism-common-libs/go.mod ./common/prism-common-libs/
-COPY services/prism-auth-service/go.mod ./services/prism-auth-service/
-COPY services/prism-user-service/go.mod ./services/prism-user-service/
-COPY services/prism-notification-service/go.mod ./services/prism-notification-service/
-COPY services/prism-file-service/go.mod ./services/prism-file-service/
-
-# Download dependensi agar bisa di-cache
+COPY go.mod go.sum ./
 RUN go mod download
-
-# Salin semua source code
 COPY . .
+# Membangun package main di direktori saat ini
+RUN go build -ldflags="-w -s" -o /app/server .
 
-# Build aplikasi spesifik untuk service ini
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/main ./services/prism-notification-service
-
-
-# --- Tahap 2: Final Image ---
-# Tahap ini membuat image akhir yang ramping yang akan kita jalankan.
+# Tahap 2: Final - Image runtime yang ramping dan aman
 FROM alpine:latest
-
 WORKDIR /app
-
-# Salin binary aplikasi yang sudah di-build dari tahap 'builder'
-COPY --from=builder /app/main .
-
-# Definisikan service name untuk logging dan monitoring
-ENV SERVICE_NAME=prism-notification-service
-
-# Jalankan aplikasi secara langsung. Tidak ada lagi entrypoint script.
-CMD ["./main"]
+# Menambahkan user non-root untuk keamanan
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# Salin binary dari tahap builder
+COPY --from=builder /app/server .
+# PENTING: Salin direktori templates agar bisa diakses oleh aplikasi
+COPY --from=builder /app/templates ./templates
+# Label standar untuk metadata image
+LABEL org.opencontainers.image.source="https://github.com/Lumina-Enterprise-Solutions/prism-notification-service"
+# Atur kepemilikan dan ganti user
+RUN chown -R appuser:appgroup /app
+USER appuser
+# Expose port (sebagai dokumentasi)
+EXPOSE 8080
+# Perintah default untuk menjalankan aplikasi
+CMD ["./server"]
