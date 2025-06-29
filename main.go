@@ -104,7 +104,11 @@ func main() {
 
 	// === Setup Komponen Inti ===
 	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
-	defer redisClient.Close()
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			serviceLogger.Error().Err(err).Msg("Gagal menutup koneksi Redis dengan benar")
+		}
+	}()
 
 	hub := websocket.NewHub()
 	go hub.Run()
@@ -117,7 +121,11 @@ func main() {
 	if err != nil {
 		serviceLogger.Fatal().Err(err).Msg("Gagal menginisialisasi Queue Service (RabbitMQ)")
 	}
-	defer queueService.Close()
+	defer func() {
+		if err := queueService.Close(); err != nil {
+			serviceLogger.Error().Err(err).Msg("Gagal menutup koneksi RabbitMQ dengan benar")
+		}
+	}()
 
 	notificationHandler := handler.NewNotificationHandler(queueService, hub)
 

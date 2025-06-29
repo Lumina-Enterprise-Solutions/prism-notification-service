@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Mock untuk AMQPChannel (tidak ada perubahan)
 type mockAMQPChannel struct {
 	mock.Mock
 }
@@ -35,25 +34,24 @@ func (m *mockAMQPChannel) Close() error {
 	return args.Error(0)
 }
 
-// Mock untuk AMQPConnection (tidak ada perubahan)
-type mockAMQPConnection struct {
-	mock.Mock
-}
+// // Mock untuk AMQPConnection (tidak ada perubahan)
+// type mockAMQPConnection struct {
+// 	mock.Mock
+// }
 
-func (m *mockAMQPConnection) Channel() (AMQPChannel, error) {
-	args := m.Called()
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(AMQPChannel), args.Error(1)
-}
+// func (m *mockAMQPConnection) Channel() (AMQPChannel, error) {
+// 	args := m.Called()
+// 	if args.Get(0) == nil {
+// 		return nil, args.Error(1)
+// 	}
+// 	return args.Get(0).(AMQPChannel), args.Error(1)
+// }
 
-func (m *mockAMQPConnection) Close() error {
-	args := m.Called()
-	return args.Error(0)
-}
+// func (m *mockAMQPConnection) Close() error {
+// 	args := m.Called()
+// 	return args.Error(0)
+// }
 
-// Mock Acknowledger (tidak ada perubahan)
 type mockAcknowledger struct{ mock.Mock }
 
 func (m *mockAcknowledger) Ack(tag uint64, multiple bool) error                { return nil }

@@ -10,7 +10,6 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-
 const (
 	ExchangeName           = "prism_notifications_exchange"
 	QueueName              = "notification_queue"
@@ -143,11 +142,11 @@ func (s *RabbitMQQueueService) Consume(ctx context.Context, handler func(job Not
 	msgs, err := s.channel.Consume(
 		QueueName,
 		"notification-worker",
-		false,
-		false,
-		false,
-		false,
-		nil,
+		false, // autoAck: false
+		false, // exclusive
+		false, // noLocal
+		false, // noWait
+		nil,   // args
 	)
 	if err != nil {
 		return fmt.Errorf("gagal register consumer: %w", err)
@@ -168,18 +167,27 @@ func (s *RabbitMQQueueService) Consume(ctx context.Context, handler func(job Not
 
 			var job NotificationJob
 			if err := json.Unmarshal(d.Body, &job); err != nil {
-				log.Error().Err(err).Msg("Gagal unmarshal job. Mengirim Nack dan drop pesan.")
-				d.Nack(false, false)
+				log.Error().Err(err).Msg("Gagal unmarshal job dari queue. Mengirim Nack dan drop pesan.")
+				// FIX: Periksa error dari Nack.
+				if err := d.Nack(false, false); err != nil {
+					log.Error().Err(err).Msg("Gagal mengirim Nack untuk pesan yang korup.")
+				}
 				continue
 			}
 
 			err := handler(job)
 			if err != nil {
 				log.Error().Err(err).Str("user_id", job.RecipientUserID).Msg("Handler gagal memproses job. Mengirim Nack agar pesan di-DLQ.")
-				d.Nack(false, false)
+				// FIX: Periksa error dari Nack.
+				if err := d.Nack(false, false); err != nil {
+					log.Error().Err(err).Msg("Gagal mengirim Nack untuk pesan yang gagal diproses.")
+				}
 			} else {
 				log.Info().Str("user_id", job.RecipientUserID).Msg("Job berhasil diproses. Mengirim Ack.")
-				d.Ack(false)
+				// FIX: Periksa error dari Ack.
+				if err := d.Ack(false); err != nil {
+					log.Error().Err(err).Msg("Gagal mengirim Ack untuk pesan yang berhasil diproses.")
+				}
 			}
 		}
 	}
