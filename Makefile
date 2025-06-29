@@ -43,18 +43,12 @@ run: build ## 🚀 Jalankan aplikasi secara lokal (memerlukan build terlebih dah
 	JAEGER_ENDPOINT=localhost:4317 \
 	./$(BINARY_NAME)
 
-test: ## 🧪 Jalankan semua unit test (per paket) dengan race detector
-	@echo "Running tests for $(SERVICE_NAME) (package-by-package)..."
-	@go test -v -race -timeout 30s github.com/Lumina-Enterprise-Solutions/prism-notification-service/config
-	@go test -v -race -timeout 30s github.com/Lumina-Enterprise-Solutions/prism-notification-service/internal/service
-	@go test -v -race -timeout 30s github.com/Lumina-Enterprise-Solutions/prism-notification-service/internal/websocket
-	@go test -v -race -timeout 30s github.com/Lumina-Enterprise-Solutions/prism-notification-service/internal/handler
-	@echo "All tests passed."
+test: ## 🧪 Jalankan semua unit test untuk service ini
+	@echo "Running tests for $(SERVICE_NAME)..."
+	@go test -v -race -cover ./... # <-- PERUBAHAN: Gunakan ./...
 
 lint: ## 🧹 Jalankan linter golangci-lint
 	@echo "Running linter..."
-	# Pastikan Anda telah menginstal golangci-lint:
-	# go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 	@golangci-lint run ./...
 
 cover: ## 📊 Gabungkan laporan coverage dan buka di browser

@@ -5,86 +5,127 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time" // <-- Impor paket time
 
-	"github.com/go-redis/redismock/v9"
+	"github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
-// TestEnqueue_Success tidak berubah dan sudah benar.
-func TestEnqueue_Success(t *testing.T) {
-	db, mock := redismock.NewClientMock()
-	queueService := NewQueueService(db) // Menggunakan konstruktor agar konsisten
-	job := NotificationJob{
-		RecipientUserID: "user-123",
-		To:              "test@example.com",
-		Subject:         "Test Subject",
-		TemplateName:    "welcome.html",
-	}
-	payload, err := json.Marshal(job)
-	require.NoError(t, err)
-	mock.ExpectLPush(NotificationQueueKey, payload).SetVal(1)
-	err = queueService.Enqueue(context.Background(), job)
-	assert.NoError(t, err, "Enqueue seharusnya tidak menghasilkan error")
-	assert.NoError(t, mock.ExpectationsWereMet(), "Ekspektasi mock tidak terpenuhi")
+type mockAMQPChannel struct {
+	mock.Mock
 }
 
-// TestDequeue_Success diperbaiki.
-func TestDequeue_Success(t *testing.T) {
-	db, mock := redismock.NewClientMock()
-	queueService := NewQueueService(db)
-
-	job := NotificationJob{
-		RecipientUserID: "user-456",
-		To:              "another@example.com",
-		Subject:         "Another Subject",
-		TemplateName:    "password_reset.html",
-	}
-	payload, err := json.Marshal(job)
-	require.NoError(t, err)
-
-	// FIX: Sesuaikan timeout BRPop agar cocok dengan implementasi (5 detik).
-	mock.ExpectBRPop(5*time.Second, NotificationQueueKey).SetVal([]string{NotificationQueueKey, string(payload)})
-
-	dequeuedJob, err := queueService.Dequeue(context.Background())
-	assert.NoError(t, err, "Dequeue seharusnya tidak menghasilkan error")
-	require.NotNil(t, dequeuedJob, "Job yang di-dequeue tidak boleh nil")
-	assert.Equal(t, job.RecipientUserID, dequeuedJob.RecipientUserID, "UserID tidak cocok")
-	assert.Equal(t, job.To, dequeuedJob.To, "Penerima email tidak cocok")
-	assert.NoError(t, mock.ExpectationsWereMet(), "Ekspektasi mock tidak terpenuhi")
+func (m *mockAMQPChannel) PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp091.Publishing) error {
+	args := m.Called(ctx, exchange, key, mandatory, immediate, msg)
+	return args.Error(0)
 }
 
-// TestDequeue_RedisError diperbaiki.
-func TestDequeue_RedisError(t *testing.T) {
-	db, mock := redismock.NewClientMock()
-	queueService := NewQueueService(db)
-
-	expectedError := errors.New("koneksi redis putus")
-	// FIX: Sesuaikan timeout BRPop agar cocok dengan implementasi (5 detik).
-	mock.ExpectBRPop(5*time.Second, NotificationQueueKey).SetErr(expectedError)
-
-	dequeuedJob, err := queueService.Dequeue(context.Background())
-
-	assert.Error(t, err, "Dequeue seharusnya mengembalikan error")
-	assert.Equal(t, expectedError, err, "Error yang dikembalikan tidak sesuai harapan")
-	assert.Nil(t, dequeuedJob, "Job seharusnya nil saat terjadi error")
-	assert.NoError(t, mock.ExpectationsWereMet(), "Ekspektasi mock tidak terpenuhi")
+func (m *mockAMQPChannel) Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp091.Table) (<-chan amqp091.Delivery, error) {
+	calledArgs := m.Called(queue, consumer, autoAck, exclusive, noLocal, noWait, args)
+	if calledArgs.Get(0) == nil {
+		return nil, calledArgs.Error(1)
+	}
+	return calledArgs.Get(0).(<-chan amqp091.Delivery), calledArgs.Error(1)
 }
 
-// TestEnqueueToDLQ_Success tidak berubah.
-func TestEnqueueToDLQ_Success(t *testing.T) {
-	db, mock := redismock.NewClientMock()
-	queueService := NewQueueService(db)
-	job := NotificationJob{
-		RecipientUserID: "user-789",
-		To:              "failed@example.com",
-		Subject:         "Failed Job",
-	}
-	payload, err := json.Marshal(job)
+func (m *mockAMQPChannel) Close() error {
+	args := m.Called()
+	return args.Error(0)
+}
+
+// // Mock untuk AMQPConnection (tidak ada perubahan)
+// type mockAMQPConnection struct {
+// 	mock.Mock
+// }
+
+// func (m *mockAMQPConnection) Channel() (AMQPChannel, error) {
+// 	args := m.Called()
+// 	if args.Get(0) == nil {
+// 		return nil, args.Error(1)
+// 	}
+// 	return args.Get(0).(AMQPChannel), args.Error(1)
+// }
+
+// func (m *mockAMQPConnection) Close() error {
+// 	args := m.Called()
+// 	return args.Error(0)
+// }
+
+type mockAcknowledger struct{ mock.Mock }
+
+func (m *mockAcknowledger) Ack(tag uint64, multiple bool) error                { return nil }
+func (m *mockAcknowledger) Nack(tag uint64, multiple bool, requeue bool) error { return nil }
+func (m *mockAcknowledger) Reject(tag uint64, requeue bool) error              { return nil }
+
+func TestRabbitMQ_Enqueue(t *testing.T) {
+	mockChannel := new(mockAMQPChannel)
+	service := &RabbitMQQueueService{channel: mockChannel}
+	ctx := context.Background()
+
+	job := NotificationJob{To: "test@example.com", Subject: "Test"}
+	payload, _ := json.Marshal(job)
+
+	mockChannel.On("PublishWithContext",
+		mock.Anything, ExchangeName, RoutingKey, false, false,
+		amqp091.Publishing{ContentType: ContentTypeJSON, DeliveryMode: DeliveryModePersistent, Body: payload},
+	).Return(nil).Once()
+
+	err := service.Enqueue(ctx, job)
+
 	require.NoError(t, err)
-	mock.ExpectLPush(NotificationDLQKey, payload).SetVal(1)
-	err = queueService.EnqueueToDLQ(context.Background(), job)
-	assert.NoError(t, err, "EnqueueToDLQ seharusnya tidak menghasilkan error")
-	assert.NoError(t, mock.ExpectationsWereMet(), "Ekspektasi mock tidak terpenuhi")
+	mockChannel.AssertExpectations(t)
+}
+
+func TestRabbitMQ_EnqueueFails(t *testing.T) {
+	mockChannel := new(mockAMQPChannel)
+	service := &RabbitMQQueueService{channel: mockChannel}
+	ctx := context.Background()
+	expectedError := errors.New("publish failed")
+	job := NotificationJob{To: "test@example.com", Subject: "Test"}
+
+	mockChannel.On("PublishWithContext", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(expectedError).Once()
+
+	err := service.Enqueue(ctx, job)
+
+	require.Error(t, err)
+	assert.Equal(t, expectedError, err)
+	mockChannel.AssertExpectations(t)
+}
+
+func TestRabbitMQ_Consume(t *testing.T) {
+	mockChannel := new(mockAMQPChannel)
+	service := &RabbitMQQueueService{channel: mockChannel}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	deliveryChan := make(chan amqp091.Delivery, 1)
+	job := NotificationJob{To: "test@example.com", Subject: "Consume Test"}
+	payload, _ := json.Marshal(job)
+
+	deliveryChan <- amqp091.Delivery{
+		Acknowledger: &mockAcknowledger{},
+		Body:         payload,
+	}
+	close(deliveryChan)
+
+	// --- INI ADALAH PERBAIKAN UTAMA ---
+	mockChannel.On(
+		"Consume",
+		QueueName,             // queue
+		"notification-worker", // consumer
+		false,                 // autoAck
+		false,                 // exclusive
+		false,                 // noLocal
+		false,                 // noWait
+		(amqp091.Table)(nil),  // args dengan tipe yang benar
+	).Return((<-chan amqp091.Delivery)(deliveryChan), nil).Once()
+
+	err := service.Consume(ctx, func(j NotificationJob) error {
+		assert.Equal(t, job, j)
+		return nil
+	})
+
+	assert.NoError(t, err)
+	mockChannel.AssertExpectations(t)
 }

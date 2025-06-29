@@ -1,3 +1,4 @@
+// services/prism-notification-service/main.go (FINAL)
 package main
 
 import (
@@ -13,7 +14,7 @@ import (
 
 	"github.com/Lumina-Enterprise-Solutions/prism-common-libs/auth"
 	"github.com/Lumina-Enterprise-Solutions/prism-common-libs/client"
-	"github.com/Lumina-Enterprise-Solutions/prism-common-libs/enhanced_logger" // Ganti nama impor agar lebih pendek
+	"github.com/Lumina-Enterprise-Solutions/prism-common-libs/enhanced_logger"
 	"github.com/Lumina-Enterprise-Solutions/prism-common-libs/telemetry"
 	notifconfig "github.com/Lumina-Enterprise-Solutions/prism-notification-service/config"
 	"github.com/Lumina-Enterprise-Solutions/prism-notification-service/internal/handler"
@@ -21,12 +22,12 @@ import (
 	"github.com/Lumina-Enterprise-Solutions/prism-notification-service/internal/websocket"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
-	"github.com/rs/zerolog" // Impor zerolog untuk menggunakan tipenya
+	"github.com/rs/zerolog"
 	ginprometheus "github.com/zsais/go-gin-prometheus"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 )
 
-// FIX: Ganti enhanced_logger.Logger menjadi zerolog.Logger
+// setupDependencies hanya fokus pada loading rahasia yang dibutuhkan.
 func setupDependencies(cfg *notifconfig.Config, logger zerolog.Logger) error {
 	vaultClient, err := client.NewVaultClient(cfg.VaultAddr, cfg.VaultToken)
 	if err != nil {
@@ -43,15 +44,48 @@ func setupDependencies(cfg *notifconfig.Config, logger zerolog.Logger) error {
 	return nil
 }
 
+// createJobHandler adalah closure yang membuat handler fungsi untuk memproses job RabbitMQ.
+// Ini memungkinkan injeksi dependensi (EmailService, Hub) ke dalam logic worker.
+func createJobHandler(es *service.EmailService, hub *websocket.Hub, logger zerolog.Logger) func(job service.NotificationJob) error {
+	const maxRetries = 3
+	const retryDelay = 20 * time.Second
+
+	return func(job service.NotificationJob) error {
+		log := logger.With().Str("user_id", job.RecipientUserID).Str("subject", job.Subject).Logger()
+		log.Info().Msg("Memproses job notifikasi")
+
+		if hub.SendToUser(job.RecipientUserID, map[string]string{"type": "new_notification", "subject": job.Subject}) {
+			log.Info().Msg("Notifikasi terkirim via WebSocket")
+		}
+
+		var sendErr error
+		for i := 0; i < maxRetries; i++ {
+			sendErr = es.Send(job.To, job.Subject, job.TemplateName, job.TemplateData)
+			if sendErr == nil {
+				log.Info().Msg("Email berhasil terkirim")
+				return nil // Sukses, pesan akan di-ack.
+			}
+			log.Warn().Err(sendErr).Int("attempt", i+1).Msg("Gagal mengirim email, mencoba lagi...")
+			if i < maxRetries-1 {
+				time.Sleep(retryDelay)
+			}
+		}
+
+		// Jika semua percobaan gagal, kembalikan error. Pesan akan di-nack dan masuk DLQ.
+		return fmt.Errorf("job gagal setelah %d percobaan: %w", maxRetries, sendErr)
+	}
+}
+
 func main() {
-	// === Inisialisasi ===
-	enhanced_logger.Init() // Tetap panggil Init() untuk setup global
+	// === Inisialisasi & Konfigurasi ===
+	enhanced_logger.Init()
 	serviceLogger := enhanced_logger.WithService("prism-notification-service")
 	cfg := notifconfig.Load()
 
 	enhanced_logger.LogStartup(cfg.ServiceName, cfg.Port, map[string]interface{}{
 		"jaeger_endpoint": cfg.JaegerEndpoint,
 		"redis_addr":      cfg.RedisAddr,
+		"rabbitmq_url":    cfg.RabbitMQURL,
 	})
 
 	tp, err := telemetry.InitTracerProvider(cfg.ServiceName, cfg.JaegerEndpoint)
@@ -72,32 +106,49 @@ func main() {
 	redisClient := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 	defer func() {
 		if err := redisClient.Close(); err != nil {
-			serviceLogger.Error().Err(err).Msg("Error saat menutup klien Redis")
+			serviceLogger.Error().Err(err).Msg("Gagal menutup koneksi Redis dengan benar")
 		}
 	}()
 
 	hub := websocket.NewHub()
 	go hub.Run()
+	defer hub.Stop()
 
 	emailService := service.NewEmailService()
-	queueService := service.NewQueueService(redisClient) // FIX: Pass Redis client yang sudah ada
+
+	// Inisialisasi RabbitMQ Queue Service
+	queueService, err := service.NewRabbitMQQueueService(cfg.RabbitMQURL)
+	if err != nil {
+		serviceLogger.Fatal().Err(err).Msg("Gagal menginisialisasi Queue Service (RabbitMQ)")
+	}
+	defer func() {
+		if err := queueService.Close(); err != nil {
+			serviceLogger.Error().Err(err).Msg("Gagal menutup koneksi RabbitMQ dengan benar")
+		}
+	}()
+
 	notificationHandler := handler.NewNotificationHandler(queueService, hub)
 
-	// === Jalankan Worker Background ===
+	// === Jalankan Worker Background (Consumer) ===
 	workerCtx, workerCancel := context.WithCancel(context.Background())
-	go runWorker(workerCtx, queueService, emailService, hub, serviceLogger)
+	jobHandler := createJobHandler(emailService, hub, serviceLogger)
+
+	go func() {
+		if err := queueService.Consume(workerCtx, jobHandler); err != nil && !errors.Is(err, context.Canceled) {
+			serviceLogger.Fatal().Err(err).Msg("RabbitMQ consumer berhenti karena error tak terduga")
+		}
+	}()
 
 	// === Setup Server HTTP ===
 	portStr := strconv.Itoa(cfg.Port)
 	router := gin.Default()
 	router.Use(otelgin.Middleware(cfg.ServiceName))
+
 	p := ginprometheus.NewPrometheus("gin")
 	p.Use(router)
 
-	// FIX: Gunakan redisClient yang sama untuk JWT middleware
 	jwtAuthMiddleware := auth.JWTMiddleware(redisClient)
 
-	// --- Rute API ---
 	notificationRoutes := router.Group("/notifications")
 	{
 		notificationRoutes.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "healthy"}) })
@@ -124,62 +175,17 @@ func main() {
 
 	serviceLogger.Info().Msg("Sinyal shutdown diterima, memulai graceful shutdown...")
 
+	// 1. Batalkan konteks worker agar loop Consume berhenti.
 	workerCancel()
-	hub.Stop()
 
+	// 2. Beri waktu sedikit agar consumer bisa menyelesaikan ack/nack pesan terakhir.
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
+	// 3. Matikan server HTTP.
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		serviceLogger.Fatal().Err(err).Msg("Server terpaksa dimatikan")
 	}
 
 	enhanced_logger.LogShutdown(cfg.ServiceName)
-}
-
-// FIX: Ubah tipe EmailSender ke tipe konkret *service.EmailService dan Logger ke zerolog.Logger
-func runWorker(ctx context.Context, qs service.Queue, es *service.EmailService, hub *websocket.Hub, logger zerolog.Logger) {
-	logger.Info().Msg("Worker antrian notifikasi dimulai...")
-	const maxRetries = 3
-	const retryDelay = 20 * time.Second
-
-	for {
-		select {
-		case <-ctx.Done():
-			logger.Info().Msg("Worker antrian notifikasi berhenti.")
-			return
-		default:
-			job, err := qs.Dequeue(ctx)
-			if err != nil {
-				if !errors.Is(err, redis.Nil) && !errors.Is(err, context.Canceled) {
-					logger.Error().Err(err).Msg("Gagal mengambil job dari antrian, mencoba lagi...")
-					time.Sleep(5 * time.Second)
-				}
-				continue
-			}
-
-			logger.Info().Str("recipient_id", job.RecipientUserID).Str("subject", job.Subject).Msg("Memproses job notifikasi")
-
-			if hub.SendToUser(job.RecipientUserID, map[string]string{"type": "new_notification", "subject": job.Subject}) {
-				logger.Info().Str("user_id", job.RecipientUserID).Msg("Notifikasi terkirim via WebSocket")
-			}
-
-			var sendErr error
-			for i := 0; i < maxRetries; i++ {
-				sendErr = es.Send(job.To, job.Subject, job.TemplateName, job.TemplateData)
-				if sendErr == nil {
-					break
-				}
-				logger.Warn().Err(sendErr).Int("attempt", i+1).Msg("Gagal mengirim email, mencoba lagi...")
-				if i < maxRetries-1 {
-					time.Sleep(retryDelay)
-				}
-			}
-
-			if sendErr != nil {
-				logger.Error().Err(sendErr).Msg("Job gagal setelah semua percobaan, dipindahkan ke DLQ")
-				_ = qs.EnqueueToDLQ(context.Background(), *job)
-			}
-		}
-	}
 }
