@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,11 +24,11 @@ import (
 	"go.uber.org/goleak"
 )
 
-// MockQueueService tetap sama
+// MockQueueService sekarang memiliki semua method yang dibutuhkan oleh service.Queue.
 type MockQueueService struct {
-	EnqueueFunc    func(ctx context.Context, job service.NotificationJob) error
-	DequeueFunc    func(ctx context.Context) (*service.NotificationJob, error)
-	EnqueueDLQFunc func(ctx context.Context, job service.NotificationJob) error
+	EnqueueFunc func(ctx context.Context, job service.NotificationJob) error
+	ConsumeFunc func(ctx context.Context, handler func(job service.NotificationJob) error) error
+	CloseFunc   func() error
 }
 
 func (m *MockQueueService) Enqueue(ctx context.Context, job service.NotificationJob) error {
@@ -36,28 +37,28 @@ func (m *MockQueueService) Enqueue(ctx context.Context, job service.Notification
 	}
 	return nil
 }
-func (m *MockQueueService) Dequeue(ctx context.Context) (*service.NotificationJob, error) {
-	if m.DequeueFunc != nil {
-		return m.DequeueFunc(ctx)
+
+func (m *MockQueueService) Consume(ctx context.Context, handler func(job service.NotificationJob) error) error {
+	if m.ConsumeFunc != nil {
+		return m.ConsumeFunc(ctx, handler)
 	}
-	return nil, nil
+	return nil
 }
-func (m *MockQueueService) EnqueueToDLQ(ctx context.Context, job service.NotificationJob) error {
-	if m.EnqueueDLQFunc != nil {
-		return m.EnqueueDLQFunc(ctx, job)
+
+func (m *MockQueueService) Close() error {
+	if m.CloseFunc != nil {
+		return m.CloseFunc()
 	}
 	return nil
 }
 
 var _ service.Queue = (*MockQueueService)(nil)
 
-// FIX: Kembalikan fungsi setupRouter
 func setupRouter(q service.Queue, h *ws.Hub) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.Default()
 	handler := NewNotificationHandler(q, h)
 	router.POST("/notifications/send", handler.SendNotification)
-	// Kita tidak akan setup /ws di sini lagi, karena testnya butuh middleware khusus
 	return router
 }
 
@@ -70,7 +71,6 @@ func setupRouterWithRealMiddleware(q service.Queue, h *ws.Hub, redisClient *redi
 	return router
 }
 
-// TestSendNotification_Success tidak berubah
 func TestSendNotification_Success(t *testing.T) {
 	hub := ws.NewHub()
 	go hub.Run()
@@ -105,7 +105,6 @@ func TestHandleWebSocket(t *testing.T) {
 	defer hub.Stop()
 
 	redisClient, redisMock := redismock.NewClientMock()
-	// LINT FIX: Periksa error saat menutup klien Redis
 	defer func() {
 		if err := redisClient.Close(); err != nil {
 			t.Logf("failed to close redis mock client: %v", err)
@@ -134,7 +133,6 @@ func TestHandleWebSocket(t *testing.T) {
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
 	require.NoError(t, err, "Handshake WebSocket seharusnya berhasil")
 
-	// LINT FIX: Periksa error saat menutup body respons
 	if resp != nil {
 		assert.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode)
 		defer func() {
@@ -144,8 +142,6 @@ func TestHandleWebSocket(t *testing.T) {
 		}()
 	}
 	require.NotNil(t, conn)
-
-	// LINT FIX: Periksa error saat menutup koneksi websocket
 	defer func() {
 		if err := conn.Close(); err != nil {
 			t.Logf("failed to close websocket connection: %v", err)
@@ -155,4 +151,18 @@ func TestHandleWebSocket(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	assert.True(t, hub.IsClientRegistered(userID), "Klien harus terdaftar setelah handshake")
 	require.NoError(t, redisMock.ExpectationsWereMet())
+}
+
+func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
+	c := make(chan struct{})
+	go func() {
+		defer close(c)
+		wg.Wait()
+	}()
+	select {
+	case <-c:
+		return false // completed normally
+	case <-time.After(timeout):
+		return true // timed out
+	}
 }
