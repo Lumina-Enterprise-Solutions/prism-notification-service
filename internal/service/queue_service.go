@@ -169,8 +169,8 @@ func (s *RabbitMQQueueService) Consume(ctx context.Context, handler func(job Not
 			if err := json.Unmarshal(d.Body, &job); err != nil {
 				log.Error().Err(err).Msg("Gagal unmarshal job dari queue. Mengirim Nack dan drop pesan.")
 				// FIX: Periksa error dari Nack.
-				if err := d.Nack(false, false); err != nil {
-					log.Error().Err(err).Msg("Gagal mengirim Nack untuk pesan yang korup.")
+				if errNack := d.Nack(false, false); errNack != nil {
+					log.Error().Err(errNack).Msg("Gagal mengirim Nack untuk pesan yang korup.")
 				}
 				continue
 			}
@@ -179,14 +179,14 @@ func (s *RabbitMQQueueService) Consume(ctx context.Context, handler func(job Not
 			if err != nil {
 				log.Error().Err(err).Str("user_id", job.RecipientUserID).Msg("Handler gagal memproses job. Mengirim Nack agar pesan di-DLQ.")
 				// FIX: Periksa error dari Nack.
-				if err := d.Nack(false, false); err != nil {
-					log.Error().Err(err).Msg("Gagal mengirim Nack untuk pesan yang gagal diproses.")
+				if errNack := d.Nack(false, false); errNack != nil {
+					log.Error().Err(errNack).Msg("Gagal mengirim Nack untuk pesan yang gagal diproses.")
 				}
 			} else {
 				log.Info().Str("user_id", job.RecipientUserID).Msg("Job berhasil diproses. Mengirim Ack.")
 				// FIX: Periksa error dari Ack.
-				if err := d.Ack(false); err != nil {
-					log.Error().Err(err).Msg("Gagal mengirim Ack untuk pesan yang berhasil diproses.")
+				if errAck := d.Ack(false); errAck != nil {
+					log.Error().Err(errAck).Msg("Gagal mengirim Ack untuk pesan yang berhasil diproses.")
 				}
 			}
 		}

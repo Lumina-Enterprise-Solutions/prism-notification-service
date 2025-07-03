@@ -1,3 +1,4 @@
+// internal/handler/notification_handler_test.go (FIXED)
 package handler
 
 import (
@@ -23,7 +24,7 @@ import (
 	"go.uber.org/goleak"
 )
 
-// MockQueueService sekarang memiliki semua method yang dibutuhkan oleh service.Queue.
+// ... (MockQueueService tetap sama) ...
 type MockQueueService struct {
 	EnqueueFunc func(ctx context.Context, job service.NotificationJob) error
 	ConsumeFunc func(ctx context.Context, handler func(job service.NotificationJob) error) error
@@ -61,10 +62,12 @@ func setupRouter(q service.Queue, h *ws.Hub) *gin.Engine {
 	return router
 }
 
+// ## PERBAIKAN: Fungsi setup router sekarang menerima redis.Client ##
 func setupRouterWithRealMiddleware(q service.Queue, h *ws.Hub, redisClient *redis.Client) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.Default()
 	handler := NewNotificationHandler(q, h)
+	// ## PERBAIKAN: Middleware JWT diinisialisasi dengan redis client ##
 	jwtAuthMiddleware := auth.JWTMiddleware(redisClient)
 	router.GET("/ws", jwtAuthMiddleware, handler.HandleWebSocket)
 	return router
@@ -110,6 +113,7 @@ func TestHandleWebSocket(t *testing.T) {
 		}
 	}()
 
+	// ## PERBAIKAN: Pass redisClient ke setup function ##
 	router := setupRouterWithRealMiddleware(&MockQueueService{}, hub, redisClient)
 	server := httptest.NewServer(router)
 	defer server.Close()
@@ -151,17 +155,3 @@ func TestHandleWebSocket(t *testing.T) {
 	assert.True(t, hub.IsClientRegistered(userID), "Klien harus terdaftar setelah handshake")
 	require.NoError(t, redisMock.ExpectationsWereMet())
 }
-
-// func waitTimeout(wg *sync.WaitGroup, timeout time.Duration) bool {
-// 	c := make(chan struct{})
-// 	go func() {
-// 		defer close(c)
-// 		wg.Wait()
-// 	}()
-// 	select {
-// 	case <-c:
-// 		return false // completed normally
-// 	case <-time.After(timeout):
-// 		return true // timed out
-// 	}
-// }

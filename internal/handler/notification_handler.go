@@ -58,7 +58,7 @@ func (h *NotificationHandler) SendNotification(c *gin.Context) {
 }
 
 func (h *NotificationHandler) HandleWebSocket(c *gin.Context) {
-	// FIX: Gunakan kunci yang benar "user_id" (seperti yang di-set oleh JWTMiddleware).
+	// FIX: Gunakan kunci yang benar "user_id" (sesuai yang di-set oleh JWTMiddleware di common-libs).
 	userIDValue, exists := c.Get("user_id")
 	if !exists {
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "User ID not found in context"})

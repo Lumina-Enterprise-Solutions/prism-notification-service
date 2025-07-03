@@ -1,4 +1,4 @@
-// services/prism-notification-service/main.go (FINAL)
+// services/prism-notification-service/main.go (FIXED)
 package main
 
 import (
@@ -147,6 +147,7 @@ func main() {
 	p := ginprometheus.NewPrometheus("gin")
 	p.Use(router)
 
+	// ## PERBAIKAN: Suntikkan redisClient ke dalam JWTMiddleware ##
 	jwtAuthMiddleware := auth.JWTMiddleware(redisClient)
 
 	notificationRoutes := router.Group("/notifications")
