@@ -64,7 +64,6 @@ func (h *Hub) Register(client *Client) {
 }
 
 func (h *Hub) Unregister(client *Client) {
-	// FIX: Hapus titik yang salah ketik.
 	h.unregister <- client
 }
 
