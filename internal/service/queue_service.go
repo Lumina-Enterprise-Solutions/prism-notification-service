@@ -36,6 +36,9 @@ type NotificationJob struct {
 type AMQPChannel interface {
 	PublishWithContext(ctx context.Context, exchange, key string, mandatory, immediate bool, msg amqp091.Publishing) error
 	Consume(queue, consumer string, autoAck, exclusive, noLocal, noWait bool, args amqp091.Table) (<-chan amqp091.Delivery, error)
+	ExchangeDeclare(name, kind string, durable, autoDelete, internal, noWait bool, args amqp091.Table) error
+	QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp091.Table) (amqp091.Queue, error)
+	QueueBind(name, key, exchange string, noWait bool, args amqp091.Table) error
 	Close() error
 }
 
@@ -138,7 +141,79 @@ func (s *RabbitMQQueueService) Enqueue(ctx context.Context, job NotificationJob)
 	)
 }
 
+func (s *RabbitMQQueueService) setupTopology() error {
+	log.Info().Msg("Mendeklarasikan topologi RabbitMQ (exchanges, queues, bindings)...")
+
+	// 1. Deklarasikan Exchange Utama (tempat pesan dipublikasikan)
+	err := s.channel.ExchangeDeclare(
+		ExchangeName, // name
+		"topic",      // type: Ganti menjadi 'topic' untuk fleksibilitas
+		true,         // durable
+		false,        // auto-deleted
+		false,        // internal
+		false,        // no-wait
+		nil,          // arguments
+	)
+	if err != nil {
+		return fmt.Errorf("gagal mendeklarasikan exchange utama: %w", err)
+	}
+
+	// 2. Deklarasikan Dead-Letter Exchange (DLX)
+	err = s.channel.ExchangeDeclare(
+		DLXName,  // name
+		"direct", // type
+		true,     // durable
+		false, false, false, nil,
+	)
+	if err != nil {
+		return fmt.Errorf("gagal mendeklarasikan dead-letter exchange: %w", err)
+	}
+
+	// 3. Deklarasikan Antrian Utama (untuk notifikasi)
+	args := amqp091.Table{
+		"x-dead-letter-exchange":    DLXName,
+		"x-dead-letter-routing-key": DLQRoutingKey,
+	}
+	_, err = s.channel.QueueDeclare(
+		QueueName, // name
+		true,      // durable
+		false,     // delete when unused
+		false,     // exclusive
+		false,     // no-wait
+		args,      // arguments
+	)
+	if err != nil {
+		return fmt.Errorf("gagal mendeklarasikan antrian utama: %w", err)
+	}
+
+	// 4. Deklarasikan Dead-Letter Queue (DLQ)
+	_, err = s.channel.QueueDeclare(DLQName, true, false, false, false, nil)
+	if err != nil {
+		return fmt.Errorf("gagal mendeklarasikan dead-letter queue: %w", err)
+	}
+
+	// 5. Ikat (Bind) Antrian Utama ke Exchange Utama
+	// Mendengarkan semua topik yang diawali dengan "notification."
+	err = s.channel.QueueBind(QueueName, "notification.#", ExchangeName, false, nil)
+	if err != nil {
+		return fmt.Errorf("gagal mengikat antrian utama ke exchange: %w", err)
+	}
+
+	// 6. Ikat (Bind) DLQ ke DLX
+	err = s.channel.QueueBind(DLQName, DLQRoutingKey, DLXName, false, nil)
+	if err != nil {
+		return fmt.Errorf("gagal mengikat DLQ ke DLX: %w", err)
+	}
+
+	log.Info().Msg("Topologi RabbitMQ berhasil dideklarasikan.")
+	return nil
+}
+
 func (s *RabbitMQQueueService) Consume(ctx context.Context, handler func(job NotificationJob) error) error {
+	if err := s.setupTopology(); err != nil {
+		return fmt.Errorf("gagal setup topologi RabbitMQ: %w", err)
+	}
+
 	msgs, err := s.channel.Consume(
 		QueueName,
 		"notification-worker",

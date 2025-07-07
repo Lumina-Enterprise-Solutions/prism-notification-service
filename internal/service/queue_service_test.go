@@ -50,6 +50,19 @@ func (m *mockAMQPChannel) Close() error {
 	args := m.Called()
 	return args.Error(0)
 }
+func (m *mockAMQPChannel) ExchangeDeclare(name, kind string, durable, autoDelete, internal, noWait bool, args amqp091.Table) error {
+	calledArgs := m.Called(name, kind, durable, autoDelete, internal, noWait, args)
+	return calledArgs.Error(0)
+}
+func (m *mockAMQPChannel) QueueDeclare(name string, durable, autoDelete, exclusive, noWait bool, args amqp091.Table) (amqp091.Queue, error) {
+	calledArgs := m.Called(name, durable, autoDelete, exclusive, noWait, args)
+	return calledArgs.Get(0).(amqp091.Queue), calledArgs.Error(1)
+}
+func (m *mockAMQPChannel) QueueBind(name, key, exchange string, noWait bool, args amqp091.Table) error {
+	calledArgs := m.Called(name, key, exchange, noWait, args)
+	return calledArgs.Error(0)
+}
+
 
 // Test untuk Enqueue (sudah ada, hanya untuk kelengkapan)
 func TestRabbitMQ_Enqueue(t *testing.T) {

@@ -19,14 +19,16 @@ type EmailService struct {
 
 func NewEmailService() *EmailService {
 	host := os.Getenv("MAILTRAP_HOST")
-	port, _ := strconv.Atoi(os.Getenv("MAILTRAP_PORT"))
+	portStr := os.Getenv("MAILTRAP_PORT")
 	user := os.Getenv("MAILTRAP_USER")
 	pass := os.Getenv("MAILTRAP_PASS")
 
-	// Return mock/dummy service jika kredensial tidak ada.
-	if host == "" {
-		log.Println("PERINGATAN: Kredensial Mailtrap tidak diset. Email akan disimulasikan (tidak terkirim).")
-		// Tetap load template agar bisa diuji terpisah.
+	port, _ := strconv.Atoi(portStr)
+
+	// FIX: Periksa semua kredensial, bukan hanya host.
+	// Ini akan mencegah mode simulasi yang tidak diinginkan.
+	if host == "" || port == 0 || user == "" || pass == "" {
+		log.Println("PERINGATAN: Satu atau lebih kredensial Mailtrap (HOST, PORT, USER, PASS) tidak diset. Email akan disimulasikan (tidak terkirim).")
 		tpl, _ := loadTemplates()
 		return &EmailService{dialer: nil, templates: tpl}
 	}
