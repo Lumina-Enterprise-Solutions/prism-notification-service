@@ -3,7 +3,7 @@ module github.com/Lumina-Enterprise-Solutions/prism-notification-service
 go 1.24.3
 
 require (
-	github.com/Lumina-Enterprise-Solutions/prism-common-libs v1.2.11
+	github.com/Lumina-Enterprise-Solutions/prism-common-libs v1.2.15
 	github.com/gin-gonic/gin v1.10.1
 	github.com/go-redis/redismock/v9 v9.2.0
 	github.com/golang-jwt/jwt/v5 v5.2.2
@@ -19,7 +19,7 @@ require (
 )
 
 require (
-	github.com/Lumina-Enterprise-Solutions/prism-protobufs v0.1.1 // indirect
+	github.com/Lumina-Enterprise-Solutions/prism-protobufs v0.1.2 // indirect
 	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bytedance/sonic v1.13.3 // indirect

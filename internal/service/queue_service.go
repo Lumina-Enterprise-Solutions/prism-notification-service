@@ -147,7 +147,7 @@ func (s *RabbitMQQueueService) setupTopology() error {
 	// 1. Deklarasikan Exchange Utama (tempat pesan dipublikasikan)
 	err := s.channel.ExchangeDeclare(
 		ExchangeName, // name
-		"topic",      // type: Ganti menjadi 'topic' untuk fleksibilitas
+		"direct",     // type: Sesuaikan dengan konfigurasi RabbitMQ yang ada
 		true,         // durable
 		false,        // auto-deleted
 		false,        // internal
@@ -194,7 +194,7 @@ func (s *RabbitMQQueueService) setupTopology() error {
 
 	// 5. Ikat (Bind) Antrian Utama ke Exchange Utama
 	// Mendengarkan semua topik yang diawali dengan "notification."
-	err = s.channel.QueueBind(QueueName, "notification.#", ExchangeName, false, nil)
+	err = s.channel.QueueBind(QueueName, RoutingKey, ExchangeName, false, nil)
 	if err != nil {
 		return fmt.Errorf("gagal mengikat antrian utama ke exchange: %w", err)
 	}

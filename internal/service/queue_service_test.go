@@ -89,6 +89,14 @@ func TestRabbitMQ_Consume_Success(t *testing.T) {
 	mockChannel := new(mockAMQPChannel)
 	service := &RabbitMQQueueService{channel: mockChannel}
 
+	// 1. Setup ekspektasi untuk setupTopology
+	mockChannel.On("ExchangeDeclare", ExchangeName, "direct", true, false, false, false, mock.Anything).Return(nil)
+	mockChannel.On("ExchangeDeclare", DLXName, "direct", true, false, false, false, mock.Anything).Return(nil)
+	mockChannel.On("QueueDeclare", QueueName, true, false, false, false, mock.Anything).Return(amqp091.Queue{}, nil)
+	mockChannel.On("QueueDeclare", DLQName, true, false, false, false, mock.Anything).Return(amqp091.Queue{}, nil)
+	mockChannel.On("QueueBind", QueueName, RoutingKey, ExchangeName, false, mock.Anything).Return(nil)
+	mockChannel.On("QueueBind", DLQName, DLQRoutingKey, DLXName, false, mock.Anything).Return(nil)
+
 	// Buat channel untuk mengirim pesan tiruan
 	deliveryChan := make(chan amqp091.Delivery, 1)
 	job := NotificationJob{To: "test@example.com", Subject: "Consume Success"}
@@ -132,6 +140,11 @@ func TestRabbitMQ_Consume_HandlerFailure(t *testing.T) {
 	service := &RabbitMQQueueService{channel: mockChannel}
 	deliveryChan := make(chan amqp091.Delivery, 1)
 
+	// Setup ekspektasi untuk setupTopology
+	mockChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, true, false, false, false, mock.Anything).Return(nil)
+	mockChannel.On("QueueDeclare", mock.Anything, true, false, false, false, mock.Anything).Return(amqp091.Queue{}, nil)
+	mockChannel.On("QueueBind", mock.Anything, mock.Anything, mock.Anything, false, mock.Anything).Return(nil)
+
 	// Mock Acknowledger
 	mockAck := new(mockAcknowledger)
 	// Ekspektasi: Nack akan dipanggil dengan requeue=false
@@ -165,6 +178,11 @@ func TestRabbitMQ_Consume_UnmarshalFailure(t *testing.T) {
 	mockChannel := new(mockAMQPChannel)
 	service := &RabbitMQQueueService{channel: mockChannel}
 	deliveryChan := make(chan amqp091.Delivery, 1)
+
+	// Setup ekspektasi untuk setupTopology
+	mockChannel.On("ExchangeDeclare", mock.Anything, mock.Anything, true, false, false, false, mock.Anything).Return(nil)
+	mockChannel.On("QueueDeclare", mock.Anything, true, false, false, false, mock.Anything).Return(amqp091.Queue{}, nil)
+	mockChannel.On("QueueBind", mock.Anything, mock.Anything, mock.Anything, false, mock.Anything).Return(nil)
 
 	mockAck := new(mockAcknowledger)
 	// Ekspektasi: Nack akan dipanggil karena pesan korup
